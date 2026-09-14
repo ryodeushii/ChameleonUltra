@@ -6125,7 +6125,7 @@ class LFParadoxRead(ReaderRequiredUnit):
         print(f"   Data: {color_string((CY, data.hex().upper()))}")
         print(f"   FC: {color_string((CG, fc))}")
         print(f"   Card: {color_string((CG, card_id))}")
-        print(f"   CRC: {color_string((CG, crc))}")
+        print(f"   CRC: {color_string((CG, crc))} ({paradox_crc_status(data)})")
 
 
 @lf_paradox.command("write")
@@ -6137,11 +6137,7 @@ class LFParadoxWriteT55xx(LFParadoxIdArgsUnit, ReaderRequiredUnit):
 
     def on_exec(self, args: argparse.Namespace):
         id_hex = args.id
-        self.cmd.paradox_write_to_t55xx(bytes.fromhex(id_hex))
-        print(f" - Paradox ID write command sent: {id_hex.upper()}")
-        print(
-            "   T55xx has no write acknowledgement; read back with 'lf paradox read' to verify."
-        )
+        write_and_verify_paradox(self.cmd, bytes.fromhex(id_hex))
 
 
 @lf_paradox.command("econfig")
@@ -6170,7 +6166,7 @@ class LFParadoxEconfig(SlotIndexArgsAndGoUnit, LFParadoxIdArgsUnit):
             print(f"Data: {color_string((CY, data.hex().upper()))}")
             print(f"FC: {color_string((CG, fc))}")
             print(f"Card: {color_string((CG, card_id))}")
-            print(f"CRC: {color_string((CG, crc))}")
+            print(f"CRC: {color_string((CG, crc))} ({paradox_crc_status(data)})")
 
 
 def jablotron_card_id(raw_bytes: bytes) -> int:
@@ -6187,6 +6183,104 @@ def paradox_fields(raw_bytes: bytes) -> tuple[int, int, int]:
         raise ValueError("Paradox data must be exactly 6 bytes")
     value = int.from_bytes(raw_bytes, byteorder="big")
     return ((value >> 30) & 0xFF, (value >> 14) & 0xFFFF, (value >> 6) & 0xFF)
+
+
+def _paradox_manchester_u16(value: int) -> int:
+    encoded = 0
+    for bit in range(16):
+        encoded = (encoded << 2) | (2 if value & (0x8000 >> bit) else 1)
+    return encoded
+
+
+def _paradox_crc_for_fields(facility_code: int, card_number: int) -> int:
+    facility_encoded = _paradox_manchester_u16(facility_code)
+    card_encoded = _paradox_manchester_u16(card_number)
+    crc_input = bytes(
+        (
+            0x05,
+            0x55,
+            0x55,
+            (facility_encoded >> 8) & 0xFF,
+            facility_encoded & 0xFF,
+            (card_encoded >> 24) & 0xFF,
+            (card_encoded >> 16) & 0xFF,
+            (card_encoded >> 8) & 0xFF,
+            card_encoded & 0xFF,
+        )
+    )
+    crc = 0
+    for byte in crc_input:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x8C if crc & 1 else crc >> 1
+    return crc ^ 0x06
+
+
+def paradox_crc_info(raw_bytes: bytes) -> tuple[int, int, bool, bool]:
+    """Return stored CRC, expected CRC, field match, and canonical-layout status."""
+    if len(raw_bytes) != 6:
+        raise ValueError("Paradox data must be exactly 6 bytes")
+    value = int.from_bytes(raw_bytes, byteorder="big")
+    facility_code, card_number, stored_crc = paradox_fields(raw_bytes)
+    expected_crc = _paradox_crc_for_fields(facility_code, card_number)
+    canonical_layout = (value >> 38) == 0 and ((value >> 4) & 0x03) == 0x03
+    return stored_crc, expected_crc, stored_crc == expected_crc, canonical_layout
+
+
+def paradox_crc_status(raw_bytes: bytes) -> str:
+    """Describe CRC result without calling noncanonical frame data valid."""
+    stored_crc, expected_crc, matches, canonical_layout = paradox_crc_info(raw_bytes)
+    if canonical_layout and matches:
+        result = "valid"
+    elif canonical_layout:
+        result = "mismatch"
+    elif matches:
+        result = "matches fields; noncanonical frame layout"
+    else:
+        result = "mismatch; noncanonical frame layout"
+    return f"{result}; expected {expected_crc}"
+
+
+def paradox_wire_payload(raw_bytes: bytes) -> bytes:
+    """Normalize Paradox data to its 44 transmitted bits for comparison."""
+    if len(raw_bytes) != 6:
+        raise ValueError("Paradox data must be exactly 6 bytes")
+    return bytes(raw_bytes[:5]) + bytes((raw_bytes[5] & 0xF0,))
+
+
+def write_and_verify_paradox(cmd: chameleon_cmd.ChameleonCMD, id_bytes: bytes) -> bool:
+    """Write once, then read the T55xx once and compare its transmitted bits."""
+    print(
+        " WARNING: T55xx write enables password mode with password "
+        f"{chameleon_cmd.new_key.hex().upper()}."
+    )
+    cmd.paradox_write_to_t55xx(id_bytes)
+    print(f" - Paradox ID write command sent: {id_bytes.hex().upper()}")
+    response = cmd.paradox_scan_response()
+    if response.status == Status.LF_TAG_NO_FOUND:
+        print(" - Paradox T55xx write submitted; read-back failed: tag not found.")
+        return False
+    if response.status != Status.LF_TAG_OK:
+        try:
+            status_text = str(Status(response.status))
+        except ValueError:
+            status_text = f"unknown status 0x{int(response.status):02X}"
+        raise UnexpectedResponseError(f"Paradox T55xx read-back failed: {status_text}")
+
+    readback = response.parsed
+    if not isinstance(readback, bytes) or len(readback) != 6:
+        raise UnexpectedResponseError("Paradox T55xx read-back returned invalid data")
+
+    expected_wire = paradox_wire_payload(id_bytes)
+    readback_wire = paradox_wire_payload(readback)
+    if expected_wire != readback_wire:
+        print(" - Paradox T55xx write submitted; read-back mismatch.")
+        print(f"   Expected 44 bits: {expected_wire.hex().upper()}")
+        print(f"   Read-back 44 bits: {readback_wire.hex().upper()}")
+        return False
+
+    print(" - Paradox T55xx write verified: read-back matches 44 data bits.")
+    return True
 
 
 def pac_encode_raw(card_id: bytes) -> bytes:
@@ -6621,11 +6715,7 @@ class LFT55xxClone(ReaderRequiredUnit):
                     "--id must be exactly 12 hex characters for paradox"
                 )
             id_bytes = bytes.fromhex(args.id)
-            self.cmd.paradox_write_to_t55xx(id_bytes)
-            print(f" - Paradox card data sent to T55xx: {args.id.upper()}")
-            print(
-                "   T55xx has no write acknowledgement; read back with 'lf paradox read' to verify."
-            )
+            write_and_verify_paradox(self.cmd, id_bytes)
 
         elif t == "pac":
             if args.id is None:
@@ -6900,7 +6990,7 @@ class HWSlotList(DeviceRequiredUnit):
                     print(f"      {'Data:':40}{color_string((CY, data.hex().upper()))}")
                     print(f"      {'FC:':40}{color_string((CG, fc))}")
                     print(f"      {'Card:':40}{color_string((CG, card_id))}")
-                    print(f"      {'CRC:':40}{color_string((CG, crc))}")
+                    print(f"      {'CRC:':40}{color_string((CG, crc))} ({paradox_crc_status(data)})")
                 if lf_tag_type == TagSpecificType.Viking:
                     id = self.cmd.viking_get_emu_id()
                     print(f"      {'ID:':40}{color_string((CY, id.hex().upper()))}")

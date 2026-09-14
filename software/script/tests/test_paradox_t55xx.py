@@ -47,6 +47,8 @@ class MockDevice(ChameleonCom):
             return Response(cmd, Status.SUCCESS, b"\x01")
         if cmd == Command.GET_DEVICE_MODEL:
             return Response(cmd, Status.SUCCESS, b"\x00")
+        if cmd == Command.PARADOX_SCAN:
+            return Response(cmd, Status.LF_TAG_OK, TEST_ID)
         return Response(cmd, Status.LF_TAG_OK)
 
 
@@ -97,14 +99,13 @@ class TestParadoxT5577Command(unittest.TestCase):
             self.assertTrue(unit.before_exec(args))
             unit.on_exec(args)
 
+        write_calls = [
+            call for call in device.calls if call[0] == Command.PARADOX_WRITE_TO_T55XX
+        ]
         self.assertEqual(
-            device.calls[-1],
-            (
-                Command.PARADOX_WRITE_TO_T55XX,
-                EXPECTED_WRITE_PAYLOAD,
-            ),
+            write_calls, [(Command.PARADOX_WRITE_TO_T55XX, EXPECTED_WRITE_PAYLOAD)]
         )
-        self.assertIn("read back", output.getvalue().lower())
+        self.assertIn("verified", output.getvalue().lower())
 
     def test_generic_clone_accepts_paradox_id(self):
         device = MockDevice()
@@ -123,12 +124,11 @@ class TestParadoxT5577Command(unittest.TestCase):
             self.assertTrue(unit.before_exec(args))
             unit.on_exec(args)
 
+        write_calls = [
+            call for call in device.calls if call[0] == Command.PARADOX_WRITE_TO_T55XX
+        ]
         self.assertEqual(
-            device.calls[-1],
-            (
-                Command.PARADOX_WRITE_TO_T55XX,
-                EXPECTED_WRITE_PAYLOAD,
-            ),
+            write_calls, [(Command.PARADOX_WRITE_TO_T55XX, EXPECTED_WRITE_PAYLOAD)]
         )
 
     def test_cli_rejects_non_hex_or_wrong_length_id(self):

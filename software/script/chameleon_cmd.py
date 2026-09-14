@@ -665,13 +665,17 @@ class ChameleonCMD:
             resp.parsed = struct.unpack(">BBH8sBBBB", resp.data[:16])
         return resp
 
-    @expect_response(Status.LF_TAG_OK)
-    def paradox_scan(self):
-        """Read the six-byte Paradox card payload."""
+    def paradox_scan_response(self):
+        """Read Paradox and return raw response status for verification paths."""
         resp = self.device.send_cmd_sync(Command.PARADOX_SCAN)
         if resp.status == Status.LF_TAG_OK:
             resp.parsed = resp.data[:6]
         return resp
+
+    @expect_response(Status.LF_TAG_OK)
+    def paradox_scan(self):
+        """Read the six-byte Paradox card payload."""
+        return self.paradox_scan_response()
 
     @expect_response(Status.LF_TAG_OK)
     def paradox_write_to_t55xx(self, id_bytes: bytes):
