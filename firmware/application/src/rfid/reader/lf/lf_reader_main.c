@@ -13,6 +13,7 @@
 #include "protocols/t55xx.h"
 #include "protocols/jablotron.h"
 #include "protocols/pac.h"
+#include "protocols/paradox.h"
 #include "protocols/viking.h"
 
 #define NRF_LOG_MODULE_NAME lf_main
@@ -51,6 +52,16 @@ uint8_t scan_hidprox(uint8_t *data, uint8_t format_hint) {
  */
 uint8_t scan_ioprox(uint8_t *data, uint8_t format_hint) {
     if (ioprox_read(data, format_hint, g_timeout_readem_ms)) {
+        return STATUS_LF_TAG_OK;
+    }
+    return STATUS_LF_TAG_NO_FOUND;
+}
+
+/**
+ * Search Paradox tag
+ */
+uint8_t scan_paradox(uint8_t *data) {
+    if (paradox_read(data, g_timeout_readem_ms)) {
         return STATUS_LF_TAG_OK;
     }
     return STATUS_LF_TAG_NO_FOUND;

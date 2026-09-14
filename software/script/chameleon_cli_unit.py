@@ -713,6 +713,29 @@ class LFIOProxReadArgsUnit(DeviceRequiredUnit):
         return parser
 
 
+class LFParadoxIdArgsUnit(DeviceRequiredUnit):
+    @staticmethod
+    def add_card_arg(parser: ArgumentParserNoExit, required=False):
+        parser.add_argument(
+            "--id", type=str, required=required,
+            help="Paradox tag data (6 bytes hex)", metavar="<hex>"
+        )
+        return parser
+
+    def before_exec(self, args: argparse.Namespace):
+        if not super().before_exec(args):
+            return False
+        if args.id is not None and not re.match(r"^[a-fA-F0-9]{12}$", args.id):
+            raise ArgsParserError("ID must include 12 HEX symbols (6 bytes)")
+        return True
+
+    def args_parser(self) -> ArgumentParserNoExit:
+        raise NotImplementedError("Please implement this")
+
+    def on_exec(self, args: argparse.Namespace):
+        raise NotImplementedError("Please implement this")
+
+
 class LFVikingIdArgsUnit(DeviceRequiredUnit):
     @staticmethod
     def add_card_arg(parser: ArgumentParserNoExit, required=False):
@@ -908,6 +931,7 @@ lf_em_410x = lf_em.subgroup("410x", "EM410x commands")
 lf_hid = lf.subgroup("hid", "HID commands")
 lf_hid_prox = lf_hid.subgroup("prox", "HID Prox commands")
 lf_ioprox = lf.subgroup("ioprox", "ioProx commands")
+lf_paradox = lf.subgroup("paradox", "Paradox commands")
 lf_pac = lf.subgroup("pac", "PAC/Stanley commands")
 lf_viking = lf.subgroup("viking", "Viking commands")
 lf_jablotron = lf.subgroup("jablotron", "Jablotron commands")
@@ -6083,6 +6107,52 @@ class LFIOProxEconfig(SlotIndexArgsAndGoUnit, LFIOProxIdArgsUnit):
             print(f"   ID: {color_string((CY, cn))}")
             print(f"   Raw: {color_string((CY, raw8.hex().upper()))}")
 
+@lf_paradox.command("read")
+class LFParadoxRead(ReaderRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Scan Paradox tag and print card data"
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        data = self.cmd.paradox_scan()
+        fc, card_id, crc = paradox_fields(data)
+        print(f" Paradox")
+        print(f"   Data: {color_string((CY, data.hex().upper()))}")
+        print(f"   FC: {color_string((CG, fc))}")
+        print(f"   Card: {color_string((CG, card_id))}")
+        print(f"   CRC: {color_string((CG, crc))}")
+
+
+@lf_paradox.command("econfig")
+class LFParadoxEconfig(SlotIndexArgsAndGoUnit, LFParadoxIdArgsUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Set or get emulated Paradox card data"
+        self.add_slot_args(parser)
+        self.add_card_arg(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.id is not None:
+            slotinfo = self.cmd.get_slot_info()
+            selected = SlotNumber.from_fw(self.cmd.get_active_slot())
+            lf_tag_type = TagSpecificType(slotinfo[selected - 1]["lf"])
+            if lf_tag_type != TagSpecificType.Paradox:
+                print(f"{color_string((CR, 'WARNING'))}: Slot type not set to Paradox.")
+            data = bytes.fromhex(args.id)
+            self.cmd.paradox_set_emu_id(data)
+            print(" - Set Paradox tag data success.")
+        else:
+            data = self.cmd.paradox_get_emu_id()
+            fc, card_id, crc = paradox_fields(data)
+            print(" - Get Paradox tag data success.")
+            print(f"Data: {color_string((CY, data.hex().upper()))}")
+            print(f"FC: {color_string((CG, fc))}")
+            print(f"Card: {color_string((CG, card_id))}")
+            print(f"CRC: {color_string((CG, crc))}")
+
+
 def jablotron_card_id(raw_bytes: bytes) -> int:
     """Convert 5 raw Jablotron bytes to decimal card number via BCD."""
     card_id = 0
@@ -6090,6 +6160,13 @@ def jablotron_card_id(raw_bytes: bytes) -> int:
         card_id = card_id * 100 + ((b >> 4) * 10) + (b & 0x0F)
     return card_id
 
+
+def paradox_fields(raw_bytes: bytes) -> tuple[int, int, int]:
+    """Extract Paradox facility, card number, and CRC fields."""
+    if len(raw_bytes) != 6:
+        raise ValueError("Paradox data must be exactly 6 bytes")
+    value = int.from_bytes(raw_bytes, byteorder="big")
+    return ((value >> 30) & 0xFF, (value >> 14) & 0xFFFF, (value >> 6) & 0xFF)
 
 
 def pac_encode_raw(card_id: bytes) -> bytes:
@@ -6782,6 +6859,13 @@ class HWSlotList(DeviceRequiredUnit):
                     print(f"      {'Facility:':40}{color_string((CG, f'{fc} [0x{fc:02X}]'))}")
                     print(f"      {'ID:':40}{color_string((CY, cn))}")
                     print(f"      {'Raw:':40}{color_string((CY, raw8.hex().upper()))}")
+                if lf_tag_type == TagSpecificType.Paradox:
+                    data = self.cmd.paradox_get_emu_id()
+                    fc, card_id, crc = paradox_fields(data)
+                    print(f"      {'Data:':40}{color_string((CY, data.hex().upper()))}")
+                    print(f"      {'FC:':40}{color_string((CG, fc))}")
+                    print(f"      {'Card:':40}{color_string((CG, card_id))}")
+                    print(f"      {'CRC:':40}{color_string((CG, crc))}")
                 if lf_tag_type == TagSpecificType.Viking:
                     id = self.cmd.viking_get_emu_id()
                     print(f"      {'ID:':40}{color_string((CY, id.hex().upper()))}")

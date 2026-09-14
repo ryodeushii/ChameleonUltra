@@ -666,6 +666,14 @@ class ChameleonCMD:
         return resp
 
     @expect_response(Status.LF_TAG_OK)
+    def paradox_scan(self):
+        """Read the six-byte Paradox card payload."""
+        resp = self.device.send_cmd_sync(Command.PARADOX_SCAN)
+        if resp.status == Status.LF_TAG_OK:
+            resp.parsed = resp.data[:6]
+        return resp
+
+    @expect_response(Status.LF_TAG_OK)
     def ioprox_write_to_t55xx(self, id_bytes: bytes):
         """
         Write ioProx card data to a T55XX tag.
@@ -1034,6 +1042,21 @@ class ChameleonCMD:
         resp = self.device.send_cmd_sync(Command.IOPROX_GET_EMU_ID)
         if resp.status == Status.SUCCESS:
             resp.parsed = struct.unpack(">BBH8sBBBB", resp.data[:16])
+        return resp
+
+    @expect_response(Status.SUCCESS)
+    def paradox_set_emu_id(self, id: bytes):
+        """Set six-byte Paradox data for the active LF slot."""
+        if len(id) != 6:
+            raise ValueError("The id bytes length must equal 6")
+        return self.device.send_cmd_sync(Command.PARADOX_SET_EMU_ID, id)
+
+    @expect_response(Status.SUCCESS)
+    def paradox_get_emu_id(self):
+        """Get six-byte Paradox data for the active LF slot."""
+        resp = self.device.send_cmd_sync(Command.PARADOX_GET_EMU_ID)
+        if resp.status == Status.SUCCESS:
+            resp.parsed = resp.data[:6]
         return resp
 
     @expect_response(Status.SUCCESS)
