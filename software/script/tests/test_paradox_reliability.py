@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import main
 
 
 HOST_PWM_HEADER = r"""
@@ -240,4 +241,4 @@ class TestParadoxReliability(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

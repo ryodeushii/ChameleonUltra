@@ -159,7 +159,7 @@ class BaseCLIUnit:
         """
         return True
 
-    def on_exec(self, args: argparse.Namespace):
+    def on_exec(self, args: argparse.Namespace) -> None:
         """
             Call a function on cmd match.
 
@@ -717,8 +717,11 @@ class LFParadoxIdArgsUnit(DeviceRequiredUnit):
     @staticmethod
     def add_card_arg(parser: ArgumentParserNoExit, required=False):
         parser.add_argument(
-            "--id", type=str, required=required,
-            help="Paradox tag data (6 bytes hex)", metavar="<hex>"
+            "--id",
+            type=str,
+            required=required,
+            help="Paradox tag data (6 bytes hex)",
+            metavar="<hex>",
         )
         return parser
 
@@ -732,7 +735,7 @@ class LFParadoxIdArgsUnit(DeviceRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
         raise NotImplementedError("Please implement this")
 
-    def on_exec(self, args: argparse.Namespace):
+    def on_exec(self, args: argparse.Namespace) -> None:
         raise NotImplementedError("Please implement this")
 
 
@@ -6107,6 +6110,7 @@ class LFIOProxEconfig(SlotIndexArgsAndGoUnit, LFIOProxIdArgsUnit):
             print(f"   ID: {color_string((CY, cn))}")
             print(f"   Raw: {color_string((CY, raw8.hex().upper()))}")
 
+
 @lf_paradox.command("read")
 class LFParadoxRead(ReaderRequiredUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -6117,7 +6121,7 @@ class LFParadoxRead(ReaderRequiredUnit):
     def on_exec(self, args: argparse.Namespace):
         data = self.cmd.paradox_scan()
         fc, card_id, crc = paradox_fields(data)
-        print(f" Paradox")
+        print(" Paradox")
         print(f"   Data: {color_string((CY, data.hex().upper()))}")
         print(f"   FC: {color_string((CG, fc))}")
         print(f"   Card: {color_string((CG, card_id))}")
@@ -6135,7 +6139,9 @@ class LFParadoxWriteT55xx(LFParadoxIdArgsUnit, ReaderRequiredUnit):
         id_hex = args.id
         self.cmd.paradox_write_to_t55xx(bytes.fromhex(id_hex))
         print(f" - Paradox ID write command sent: {id_hex.upper()}")
-        print("   T55xx has no write acknowledgement; read back with 'lf paradox read' to verify.")
+        print(
+            "   T55xx has no write acknowledgement; read back with 'lf paradox read' to verify."
+        )
 
 
 @lf_paradox.command("econfig")
@@ -6611,11 +6617,15 @@ class LFT55xxClone(ReaderRequiredUnit):
             if args.id is None:
                 raise ArgsParserError("--id is required for paradox")
             if not re.match(r"^[a-fA-F0-9]{12}$", args.id):
-                raise ArgsParserError("--id must be exactly 12 hex characters for paradox")
+                raise ArgsParserError(
+                    "--id must be exactly 12 hex characters for paradox"
+                )
             id_bytes = bytes.fromhex(args.id)
             self.cmd.paradox_write_to_t55xx(id_bytes)
             print(f" - Paradox card data sent to T55xx: {args.id.upper()}")
-            print("   T55xx has no write acknowledgement; read back with 'lf paradox read' to verify.")
+            print(
+                "   T55xx has no write acknowledgement; read back with 'lf paradox read' to verify."
+            )
 
         elif t == "pac":
             if args.id is None:
