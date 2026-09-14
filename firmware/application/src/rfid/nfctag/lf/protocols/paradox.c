@@ -5,7 +5,6 @@
 #include <string.h>
 
 #include "nrf_pwm.h"
-#include "utils/fskdemod.h"
 #include "t55xx.h"
 
 #define PARADOX_FRAME_BITS (96)
@@ -14,8 +13,15 @@
 #define PARADOX_PREAMBLE (0x0F)
 #define PARADOX_DATA_BITS (44)
 #define PARADOX_PWM_MAX_ENTRIES (PARADOX_FRAME_BITS * 6)
+#define PARADOX_PHASE_COUNT (2)
+#define PARADOX_PHASE_OFFSET (25)
+#define PARADOX_GOERTZEL_15625 (1.41421356237f)
+#define PARADOX_GOERTZEL_12500 (1.61803398875f)
 
 /*
+ * Keep Paradox demodulation local. The shared FSK decoder serves other
+ * protocols and intentionally retains its raw-window behavior.
+ *
  * Paradox is FSK2a at RF/50. Its 96-bit frame starts with 00001111, then
  * carries 44 data bits as Manchester pairs. A following frame's preamble
  * closes the 104-bit decode window. The last four bits of the six-byte
@@ -41,10 +47,21 @@ static nrf_pwm_sequence_t m_paradox_pwm_seq = {
 };
 
 typedef struct {
-    uint8_t data[PARADOX_DATA_SIZE];
+    uint16_t samples[PARADOX_FSK_BITRATE];
+    uint8_t sample_count;
+} paradox_fsk_demod;
+
+typedef struct {
     uint8_t encoded_bits[PARADOX_BUFFER_BITS];
     uint8_t encoded_bit_count;
-    fsk_t *modem;
+    paradox_fsk_demod demod;
+} paradox_phase;
+
+typedef struct {
+    uint8_t data[PARADOX_DATA_SIZE];
+    /* Start second candidate after half a 50-sample bit. */
+    uint8_t input_sample_count;
+    paradox_phase phases[PARADOX_PHASE_COUNT];
 } paradox_codec;
 
 static void paradox_build_frame(const uint8_t *data, uint8_t *frame) {
@@ -76,19 +93,54 @@ static bool paradox_preamble_valid(const uint8_t *frame) {
     return true;
 }
 
-static bool paradox_decode_frame(paradox_codec *codec) {
+static float paradox_goertzel_power(float coefficient, const uint16_t *samples, float mean) {
+    float z1 = 0.0f;
+    float z2 = 0.0f;
+
+    for (uint8_t i = 0; i < PARADOX_FSK_BITRATE; i++) {
+        float z0 = coefficient * z1 - z2 + ((float)samples[i] - mean);
+        z2 = z1;
+        z1 = z0;
+    }
+
+    return z1 * z1 + z2 * z2 - coefficient * z1 * z2;
+}
+
+static bool paradox_fsk_feed(paradox_fsk_demod *demod, uint16_t sample, bool *bit) {
+    demod->samples[demod->sample_count++] = sample;
+    if (demod->sample_count < PARADOX_FSK_BITRATE) {
+        return false;
+    }
+
+    /* Remove LF_VBIAS/DC leakage before comparing the two FSK bins. */
+    uint32_t sum = 0;
+    for (uint8_t i = 0; i < PARADOX_FSK_BITRATE; i++) {
+        sum += demod->samples[i];
+    }
+    float mean = (float)sum / (float)PARADOX_FSK_BITRATE;
+    float low_frequency_power =
+        paradox_goertzel_power(PARADOX_GOERTZEL_15625, demod->samples, mean);
+    float high_frequency_power =
+        paradox_goertzel_power(PARADOX_GOERTZEL_12500, demod->samples, mean);
+
+    *bit = high_frequency_power > low_frequency_power;
+    demod->sample_count = 0;
+    return true;
+}
+
+static bool paradox_decode_frame(const paradox_phase *phase, uint8_t *output) {
     uint8_t decoded[PARADOX_DATA_SIZE] = {0};
 
-    if (codec->encoded_bit_count < PARADOX_BUFFER_BITS ||
-        !paradox_preamble_valid(codec->encoded_bits) ||
-        !paradox_preamble_valid(codec->encoded_bits + PARADOX_FRAME_BITS)) {
+    if (phase->encoded_bit_count < PARADOX_BUFFER_BITS ||
+        !paradox_preamble_valid(phase->encoded_bits) ||
+        !paradox_preamble_valid(phase->encoded_bits + PARADOX_FRAME_BITS)) {
         return false;
     }
 
     for (uint8_t i = 0; i < PARADOX_DATA_BITS; i++) {
         uint8_t pair_index = (uint8_t)(PARADOX_PREAMBLE_BITS + (i * 2));
-        uint8_t pair = (uint8_t)((codec->encoded_bits[pair_index] << 1) |
-                                 codec->encoded_bits[pair_index + 1]);
+        uint8_t pair = (uint8_t)((phase->encoded_bits[pair_index] << 1) |
+                                 phase->encoded_bits[pair_index + 1]);
         uint8_t bit;
 
         if (pair == 0x01) {
@@ -103,46 +155,38 @@ static bool paradox_decode_frame(paradox_codec *codec) {
     }
 
     /* Four low padding bits stay zero, matching the six-byte wire format. */
-    memcpy(codec->data, decoded, PARADOX_DATA_SIZE);
+    memcpy(output, decoded, PARADOX_DATA_SIZE);
     return true;
 }
 
-static void paradox_push_bit(paradox_codec *codec, bool bit) {
-    if (codec->encoded_bit_count < PARADOX_BUFFER_BITS) {
-        codec->encoded_bits[codec->encoded_bit_count++] = (uint8_t)bit;
+static void paradox_push_bit(paradox_phase *phase, bool bit) {
+    if (phase->encoded_bit_count < PARADOX_BUFFER_BITS) {
+        phase->encoded_bits[phase->encoded_bit_count++] = (uint8_t)bit;
         return;
     }
 
-    memmove(codec->encoded_bits,
-            codec->encoded_bits + 1,
+    memmove(phase->encoded_bits,
+            phase->encoded_bits + 1,
             PARADOX_BUFFER_BITS - 1);
-    codec->encoded_bits[PARADOX_BUFFER_BITS - 1] = (uint8_t)bit;
+    phase->encoded_bits[PARADOX_BUFFER_BITS - 1] = (uint8_t)bit;
+}
+
+static bool paradox_phase_feed(paradox_phase *phase, uint16_t sample, uint8_t *data) {
+    bool bit = false;
+    if (!paradox_fsk_feed(&phase->demod, sample, &bit)) {
+        return false;
+    }
+
+    paradox_push_bit(phase, bit);
+    return paradox_decode_frame(phase, data);
 }
 
 static void *paradox_alloc(void) {
-    paradox_codec *codec = (paradox_codec *)calloc(1, sizeof(*codec));
-    if (codec == NULL) {
-        return NULL;
-    }
-
-    codec->modem = fsk_alloc(PARADOX_FSK_BITRATE);
-    if (codec->modem == NULL) {
-        free(codec);
-        return NULL;
-    }
-
-    return codec;
+    return calloc(1, sizeof(paradox_codec));
 }
 
 static void paradox_free(void *codec_ptr) {
-    paradox_codec *codec = (paradox_codec *)codec_ptr;
-    if (codec == NULL) {
-        return;
-    }
-
-    fsk_free(codec->modem);
-    codec->modem = NULL;
-    free(codec);
+    free(codec_ptr);
 }
 
 static uint8_t *paradox_get_data(void *codec_ptr) {
@@ -157,28 +201,23 @@ static void paradox_decoder_start(void *codec_ptr, uint8_t format) {
         return;
     }
 
-    memset(codec->data, 0, sizeof(codec->data));
-    memset(codec->encoded_bits, 0, sizeof(codec->encoded_bits));
-    codec->encoded_bit_count = 0;
-    if (codec->modem != NULL) {
-        codec->modem->c = 0;
-        memset(codec->modem->samples, 0, sizeof(codec->modem->samples));
-    }
+    memset(codec, 0, sizeof(*codec));
 }
 
 static bool paradox_decoder_feed(void *codec_ptr, uint16_t sample) {
     paradox_codec *codec = (paradox_codec *)codec_ptr;
-    if (codec == NULL || codec->modem == NULL) {
+    if (codec == NULL) {
         return false;
     }
 
-    bool bit = false;
-    if (!fsk_feed(codec->modem, sample, &bit)) {
-        return false;
+    bool found = paradox_phase_feed(&codec->phases[0], sample, codec->data);
+    if (codec->input_sample_count >= PARADOX_PHASE_OFFSET) {
+        found = paradox_phase_feed(&codec->phases[1], sample, codec->data) || found;
     }
-
-    paradox_push_bit(codec, bit);
-    return paradox_decode_frame(codec);
+    if (codec->input_sample_count < PARADOX_PHASE_OFFSET) {
+        codec->input_sample_count++;
+    }
+    return found;
 }
 
 static void paradox_emit_bit(uint16_t *index, bool bit) {
