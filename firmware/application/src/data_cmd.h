@@ -114,6 +114,7 @@
 #define DATA_CMD_JABLOTRON_SCAN                 (3019)
 #define DATA_CMD_JABLOTRON_WRITE_TO_T55XX       (3020)
 #define DATA_CMD_PARADOX_SCAN                   (3021)
+#define DATA_CMD_PARADOX_WRITE_TO_T55XX         (3022)
 
 //
 // ******************************************************************

@@ -6,6 +6,7 @@
 
 #include "nrf_pwm.h"
 #include "utils/fskdemod.h"
+#include "t55xx.h"
 
 #define PARADOX_FRAME_BITS (96)
 #define PARADOX_BUFFER_BITS (104)
@@ -217,3 +218,18 @@ const protocol paradox = {
         .feed = paradox_decoder_feed,
     },
 };
+
+uint8_t paradox_t55xx_writer(uint8_t *data, uint32_t *blks) {
+    uint8_t frame[PARADOX_FRAME_BITS];
+
+    paradox_build_frame(data, frame);
+    blks[0] = T5577_PARADOX_CONFIG;
+    for (uint8_t block = 0; block < PARADOX_T55XX_BLOCK_COUNT - 1; block++) {
+        uint32_t word = 0;
+        for (uint8_t bit = 0; bit < 32; bit++) {
+            word = (word << 1) | frame[(block * 32) + bit];
+        }
+        blks[block + 1] = word;
+    }
+    return PARADOX_T55XX_BLOCK_COUNT;
+}

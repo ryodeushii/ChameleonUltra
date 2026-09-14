@@ -39,6 +39,7 @@ HOST_TEST = r"""
 #include <string.h>
 
 #include "protocols/paradox.h"
+#include "protocols/t55xx.h"
 
 #define SAMPLE_RATE (125000.0)
 #define PI (3.14159265358979323846)
@@ -62,6 +63,13 @@ static const uint8_t expected_frame[FRAME_BYTES] = {
 static const uint8_t expected_stream[BUFFER_BYTES] = {
     0x0F, 0x56, 0x59, 0x5A, 0x65, 0x66,
     0x69, 0x6A, 0x95, 0x96, 0x99, 0x9A, 0x0F,
+};
+
+static const uint32_t expected_t55xx_blocks[PARADOX_T55XX_BLOCK_COUNT] = {
+    0x00107070,
+    0x0F56595A,
+    0x6566696A,
+    0x9596999A,
 };
 
 static uint8_t frame_bit(const uint8_t *frame, uint16_t position) {
@@ -156,6 +164,21 @@ static void test_payload_preserved_after_rejected_frame(void) {
     paradox.free(codec);
 }
 
+static void test_t55xx_writer_preserves_wire_bits(void) {
+    uint8_t data_with_padding[PARADOX_DATA_SIZE] = {
+        0x12, 0x34, 0x56, 0x78, 0x9A, 0xBF,
+    };
+    uint32_t blocks[PARADOX_T55XX_BLOCK_COUNT] = {0};
+
+    assert(paradox_t55xx_writer((uint8_t *)expected_data, blocks) == PARADOX_T55XX_BLOCK_COUNT);
+    assert(memcmp(blocks, expected_t55xx_blocks, sizeof(blocks)) == 0);
+
+    /* The final four data bits are decoder padding and must not reach T5577. */
+    assert(paradox_t55xx_writer(data_with_padding, blocks) == PARADOX_T55XX_BLOCK_COUNT);
+    assert(memcmp(blocks, expected_t55xx_blocks, sizeof(blocks)) == 0);
+    assert(blocks[0] == T5577_PARADOX_CONFIG);
+}
+
 static void test_pwm_frame_consistency(void) {
     uint16_t expected_entry_count = 0;
     nrf_pwm_sequence_t *sequence = paradox.modulator(NULL, (uint8_t *)expected_data);
@@ -185,6 +208,7 @@ int main(void) {
     test_manchester_resync();
     test_repeated_frames_and_reset();
     test_payload_preserved_after_rejected_frame();
+    test_t55xx_writer_preserves_wire_bits();
     test_pwm_frame_consistency();
     return 0;
 }

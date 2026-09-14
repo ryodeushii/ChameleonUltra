@@ -674,6 +674,19 @@ class ChameleonCMD:
         return resp
 
     @expect_response(Status.LF_TAG_OK)
+    def paradox_write_to_t55xx(self, id_bytes: bytes):
+        """Write six-byte Paradox data using project T55XX password sequence.
+
+        Firmware tries configured legacy passwords, sets configured new password,
+        then sends config/data writes. T5577 has no write acknowledgement; read
+        the tag back to verify its contents.
+        """
+        if len(id_bytes) != 6:
+            raise ValueError("The Paradox id bytes length must equal 6")
+        data = struct.pack(f'!6s4s{4 * len(old_keys)}s', id_bytes, new_key, b''.join(old_keys))
+        return self.device.send_cmd_sync(Command.PARADOX_WRITE_TO_T55XX, data)
+
+    @expect_response(Status.LF_TAG_OK)
     def ioprox_write_to_t55xx(self, id_bytes: bytes):
         """
         Write ioProx card data to a T55XX tag.

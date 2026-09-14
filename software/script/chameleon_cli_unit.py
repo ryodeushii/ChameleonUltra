@@ -6124,6 +6124,20 @@ class LFParadoxRead(ReaderRequiredUnit):
         print(f"   CRC: {color_string((CG, crc))}")
 
 
+@lf_paradox.command("write")
+class LFParadoxWriteT55xx(LFParadoxIdArgsUnit, ReaderRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Write Paradox card data to t55xx"
+        return self.add_card_arg(parser, required=True)
+
+    def on_exec(self, args: argparse.Namespace):
+        id_hex = args.id
+        self.cmd.paradox_write_to_t55xx(bytes.fromhex(id_hex))
+        print(f" - Paradox ID write command sent: {id_hex.upper()}")
+        print("   T55xx has no write acknowledgement; read back with 'lf paradox read' to verify.")
+
+
 @lf_paradox.command("econfig")
 class LFParadoxEconfig(SlotIndexArgsAndGoUnit, LFParadoxIdArgsUnit):
     def args_parser(self) -> ArgumentParserNoExit:
@@ -6436,6 +6450,7 @@ class LFT55xxClone(ReaderRequiredUnit):
       electra  --id <26 hex>         e.g. --id DEADBEEF880102030405060708
       hid      -f <format> --cn <n>  e.g. -f H10301 --fc 10 --cn 1234
       ioprox   --ver <n> --fc <n> --cn <n>   OR   --raw8 <16 hex>
+      paradox  --id <12 hex>        e.g. --id 123456789AB0
       pac      --id <8 ASCII>        e.g. --id 11223344
       viking   --id <8 hex>          e.g. --id DEADBEEF
       idteck   --id <16 hex>         e.g. --id 4944544BDEADBEEF
@@ -6444,13 +6459,13 @@ class LFT55xxClone(ReaderRequiredUnit):
     Only supported on Chameleon Ultra (Lite has no LF writer).
     """
 
-    TYPES = ["em410x", "electra", "hid", "ioprox", "pac", "viking", "idteck"]
+    TYPES = ["em410x", "electra", "hid", "ioprox", "paradox", "pac", "viking", "idteck"]
 
     def args_parser(self) -> ArgumentParserNoExit:
         parser = ArgumentParserNoExit()
         parser.description = (
             "Clone a LF card ID onto a blank T55xx tag.\n"
-            "Supported types: em410x, electra, hid, ioprox, pac, viking, idteck.\n"
+            "Supported types: em410x, electra, hid, ioprox, paradox, pac, viking, idteck.\n"
             "Only supported on Chameleon Ultra (Lite has no LF writer)."
         )
         parser.add_argument(
@@ -6467,7 +6482,7 @@ class LFT55xxClone(ReaderRequiredUnit):
             type=str,
             required=False,
             metavar="HEX",
-            help="Card ID in hex: 10 for em410x, 26 for electra, 8 for viking, 8 or 16 for idteck; 8 ASCII chars for pac",
+            help="Card ID in hex: 10 for em410x, 26 for electra, 12 for paradox, 8 for viking, 8 or 16 for idteck; 8 ASCII chars for pac",
         )
         # HID Prox
         parser.add_argument(
@@ -6591,6 +6606,16 @@ class LFT55xxClone(ReaderRequiredUnit):
             print(f"   FC     : {fc} [0x{fc:02X}]")
             print(f"   CN     : {cn}")
             print(f"   Raw8   : {raw8.hex().upper()}")
+
+        elif t == "paradox":
+            if args.id is None:
+                raise ArgsParserError("--id is required for paradox")
+            if not re.match(r"^[a-fA-F0-9]{12}$", args.id):
+                raise ArgsParserError("--id must be exactly 12 hex characters for paradox")
+            id_bytes = bytes.fromhex(args.id)
+            self.cmd.paradox_write_to_t55xx(id_bytes)
+            print(f" - Paradox card data sent to T55xx: {args.id.upper()}")
+            print("   T55xx has no write acknowledgement; read back with 'lf paradox read' to verify.")
 
         elif t == "pac":
             if args.id is None:
